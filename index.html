@@ -22,7 +22,6 @@
             --osrs-green: #00ff00;
             --inventory-slot: #3e3529;
             --inventory-hover: #5f5242;
-            --wheel-border: #d4c4a8;
         }
 
         * {
@@ -128,12 +127,12 @@
             width: 320px;
             height: 320px;
             margin-bottom: 20px;
-            /* OSRS Widget bevel look */
             border: 4px solid var(--osrs-border-dark);
             border-top-color: var(--osrs-border-light);
             border-left-color: var(--osrs-border-light);
             background: #1a1510;
             box-shadow: inset 0 0 20px #000;
+            border-radius: 50%;
         }
 
         canvas {
@@ -141,22 +140,28 @@
             width: 100%;
             height: 100%;
             border-radius: 50%;
-            transition: transform 4s cubic-bezier(0.1, 0, 0.2, 1); /* Ease-out spin */
         }
 
         /* The Triangle Pointer */
         .pointer {
             position: absolute;
-            top: -10px;
+            top: -8px;
             left: 50%;
             transform: translateX(-50%);
             width: 0; 
             height: 0; 
             border-left: 15px solid transparent;
             border-right: 15px solid transparent;
-            border-top: 25px solid #ffff00;
+            border-top: 30px solid #ffff00;
             z-index: 5;
             filter: drop-shadow(0 2px 2px rgba(0,0,0,0.8));
+            transition: border-top-color 0.05s, transform 0.05s;
+        }
+
+        /* Suspense Effect: Pointer flashes red on tick */
+        .pointer.tick {
+            border-top-color: #ff3333;
+            transform: translateX(-50%) scale(1.2);
         }
 
         .controls {
@@ -333,7 +338,7 @@
         <!-- LEFT: Wheel -->
         <div class="rs-panel stage-panel">
             <div class="wheel-container">
-                <div class="pointer"></div>
+                <div class="pointer" id="wheelPointer"></div>
                 <canvas id="wheelCanvas" width="400" height="400"></canvas>
             </div>
 
@@ -342,11 +347,11 @@
             </div>
             
             <div style="margin-top: 15px; width: 100%; text-align: center; font-size: 1rem;">
-                <label style="color: #d4c4a8;">Speed: </label>
-                <select id="speedSelect" class="rs-input" style="width: 80px; padding: 2px;">
-                    <option value="high">High</option>
-                    <option value="medium" selected>Normal</option>
-                    <option value="low">Slow</option>
+                <label style="color: #d4c4a8;">Intensity: </label>
+                <select id="speedSelect" class="rs-input" style="width: 100px; padding: 2px;">
+                    <option value="low">Gentle</option>
+                    <option value="medium" selected>Strong</option>
+                    <option value="high">Insane</option>
                 </select>
             </div>
         </div>
@@ -389,11 +394,15 @@
     <script>
         // --- State Management ---
         let names = [];
-        const STORAGE_KEY = 'elder_gnome_list_v2'; // Updated key for new version
-        let currentRotation = 0;
-        let isSpinning = false;
+        const STORAGE_KEY = 'elder_gnome_list_v5'; 
         
-        // Colors for wheel slices (OSRS palette)
+        // Physics State
+        let currentAngle = 0;
+        let isSpinning = false;
+        let currentVelocity = 0;
+        let animationFrameId = null;
+        
+        // Colors for wheel slices
         const COLORS = ['#5e5245', '#3e3529', '#6e6251', '#4e4235'];
 
         // --- DOM Elements ---
@@ -406,12 +415,13 @@
         const winnerNameText = document.getElementById('winnerNameText');
         const canvas = document.getElementById('wheelCanvas');
         const ctx = canvas.getContext('2d');
+        const pointer = document.getElementById('wheelPointer');
 
         // --- Init ---
         window.onload = () => {
             loadNames();
             renderGrid();
-            drawWheel();
+            drawWheel(currentAngle);
             if(names.length === 0) logMessage("Inventory empty. Add some friends!", "system");
             else logMessage(`Loaded ${names.length} friends from storage.`, "info");
         };
@@ -426,7 +436,7 @@
             names.push(val);
             saveNames();
             renderGrid();
-            drawWheel(); // Update wheel visual
+            drawWheel(currentAngle);
             
             nameInput.value = '';
             nameInput.focus();
@@ -438,7 +448,7 @@
             names.splice(index, 1);
             saveNames();
             renderGrid();
-            drawWheel(); // Update wheel visual
+            drawWheel(currentAngle);
             logMessage(`Removed ${removed}.`, "info");
         }
 
@@ -447,7 +457,7 @@
                 names = [];
                 saveNames();
                 renderGrid();
-                drawWheel();
+                drawWheel(currentAngle);
                 logMessage("List cleared.", "system");
             }
         }
@@ -508,25 +518,32 @@
             setTimeout(() => el.style.transform = "none", 150);
         }
 
-        // --- Wheel Logic (Canvas) ---
-        
-        function drawWheel() {
+        // --- Wheel Logic (Physical Rotation) ---
+
+        function drawWheel(rotationAngle) {
             const width = canvas.width;
             const height = canvas.height;
             const centerX = width / 2;
             const centerY = height / 2;
             const radius = width / 2 - 10;
 
-            ctx.clearRect(0, 0, width, height);
+            // BLUR EFFECT:
+            // Instead of clearing completely, we draw a semi-transparent black rectangle.
+            // This creates trails. When speed is low, we clear normally for crispness.
+            if (currentVelocity > 0.05) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'; // High speed -> High Blur
+                ctx.fillRect(0, 0, width, height);
+            } else {
+                ctx.clearRect(0, 0, width, height); // Low speed -> Clear
+            }
 
-            // Draw Background/Border
+            // Background/Border (Redraw this every frame to stay sharp on top of blur)
             ctx.beginPath();
             ctx.arc(centerX, centerY, radius + 5, 0, 2 * Math.PI);
             ctx.fillStyle = "#271c12";
             ctx.fill();
 
             if (names.length === 0) {
-                // Empty State Wheel
                 ctx.beginPath();
                 ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
                 ctx.fillStyle = "#3e3529";
@@ -534,7 +551,6 @@
                 ctx.strokeStyle = "#5e5245";
                 ctx.lineWidth = 2;
                 ctx.stroke();
-                
                 ctx.fillStyle = "#777";
                 ctx.font = "30px VT323";
                 ctx.textAlign = "center";
@@ -543,32 +559,62 @@
                 return;
             }
 
+            // CALCULATE HIGHLIGHTED INDEX (Pointer Logic)
+            // The pointer is at the top (270deg or 3*PI/2).
+            // To find which segment is under the pointer, we calculate the angle relative to the wheel's rotation.
+            let pointerAngle = (1.5 * Math.PI - rotationAngle) % (2 * Math.PI);
+            if (pointerAngle < 0) pointerAngle += 2 * Math.PI;
+            
             const arcSize = (2 * Math.PI) / names.length;
+            let highlightedIndex = Math.floor(pointerAngle / arcSize);
+
+            // --- DRAW THE ROTATING WHEEL ---
+            ctx.save();
+            ctx.translate(centerX, centerY);
+            ctx.rotate(rotationAngle); // <--- THIS IS THE KEY: ROTATE THE CANVAS CONTEXT
 
             for (let i = 0; i < names.length; i++) {
-                const angle = i * arcSize;
+                const startAngle = i * arcSize;
+                const endAngle = (i + 1) * arcSize;
                 
-                // Slice
                 ctx.beginPath();
-                ctx.moveTo(centerX, centerY);
-                ctx.arc(centerX, centerY, radius, angle, angle + arcSize);
-                ctx.fillStyle = COLORS[i % COLORS.length];
+                ctx.moveTo(0, 0);
+                ctx.arc(0, 0, radius, startAngle, endAngle);
+                
+                // Color Logic
+                if (i === highlightedIndex) {
+                    ctx.fillStyle = "#8e8275"; // Bright highlight
+                } else {
+                    ctx.fillStyle = COLORS[i % COLORS.length];
+                }
+                
                 ctx.fill();
-                ctx.stroke(); // separator line
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = "#271c12";
+                ctx.stroke();
 
                 // Text
                 ctx.save();
-                ctx.translate(centerX, centerY);
-                ctx.rotate(angle + arcSize / 2);
+                ctx.rotate(startAngle + arcSize / 2);
                 ctx.textAlign = "right";
                 ctx.fillStyle = "#ff981f";
                 ctx.font = "24px VT323";
                 ctx.shadowColor = "black";
                 ctx.shadowBlur = 4;
-                // Adjust text position so it's inside the slice
                 ctx.fillText(names[i], radius - 20, 8);
                 ctx.restore();
             }
+            
+            ctx.restore(); // Restore context (undo rotation)
+
+            // Draw Center Pin (Static)
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, 10, 0, 2 * Math.PI);
+            ctx.fillStyle = "#d4c4a8";
+            ctx.fill();
+            ctx.strokeStyle = "#000";
+            ctx.lineWidth = 1;
+            ctx.stroke();
         }
 
         function spinWheel() {
@@ -578,108 +624,114 @@
                 shakeElement(spinBtn);
                 return;
             }
-            if (names.length === 1) {
-                logMessage("Only one participant... The choice is obvious!", "system");
-            }
 
             isSpinning = true;
             spinBtn.disabled = true;
             winnerOverlay.classList.remove('active');
 
             const speedSetting = document.getElementById('speedSelect').value;
-            let duration = 4000; // ms
-            if (speedSetting === 'high') duration = 2000;
-            if (speedSetting === 'low') duration = 6000;
-
-            // Calculate rotation
-            // Minimum 5 full spins (360 * 5) + random slice landing
-            const extraSpins = 360 * (5 + Math.floor(Math.random() * 3)); 
-            const randomOffset = Math.floor(Math.random() * 360);
             
-            // We add this to the existing rotation to prevent spinning backwards
-            const targetRotation = currentRotation + extraSpins + randomOffset;
-            
-            // Apply CSS transition
-            canvas.style.transition = `transform ${duration}ms cubic-bezier(0.1, 0, 0.2, 1)`;
-            canvas.style.transform = `rotate(-${targetRotation}deg)`; // Rotate counter-clockwise for CSS coords or clockwise
+            // INITIAL VELOCITY (How hard you "kick" the wheel)
+            if (speedSetting === 'high') {
+                currentVelocity = 0.8; 
+            }
+            else if (speedSetting === 'medium') {
+                currentVelocity = 0.5;
+            }
+            else {
+                currentVelocity = 0.3;
+            }
 
-            // Wait for transition to end
-            setTimeout(() => {
-                finishSpin(targetRotation);
-            }, duration);
+            // FRICTION (How quickly it loses momentum)
+            // Lower friction = longer spin.
+            let friction = 0.985; 
+
+            // For suspense, we only tick the pointer when slow enough.
+            let lastCrossedIndex = -1;
+
+            function loop() {
+                // Physics
+                currentAngle += currentVelocity;
+                currentVelocity *= friction;
+
+                // Visual Tick (only when slowing down to avoid strobe)
+                let shouldTick = currentVelocity < 0.15;
+                
+                if (shouldTick) {
+                    // Recalculate index under pointer
+                    let pointerAngle = (1.5 * Math.PI - currentAngle) % (2 * Math.PI);
+                    if (pointerAngle < 0) pointerAngle += 2 * Math.PI;
+                    
+                    const arcSize = (2 * Math.PI) / names.length;
+                    let currIndex = Math.floor(pointerAngle / arcSize);
+
+                    if (currIndex !== lastCrossedIndex && names.length > 0) {
+                        triggerTickVisual();
+                        lastCrossedIndex = currIndex;
+                    }
+                } else {
+                    lastCrossedIndex = -1; 
+                }
+
+                drawWheel(currentAngle);
+
+                // Stop condition: very slow
+                if (currentVelocity > 0.0005) {
+                    animationFrameId = requestAnimationFrame(loop);
+                } else {
+                    // Determine Winner
+                    let pointerAngle = (1.5 * Math.PI - currentAngle) % (2 * Math.PI);
+                    if (pointerAngle < 0) pointerAngle += 2 * Math.PI;
+                    const arcSize = (2 * Math.PI) / names.length;
+                    let finalIndex = Math.floor(pointerAngle / arcSize);
+                    
+                    finishSpin(finalIndex);
+                }
+            }
+
+            animationFrameId = requestAnimationFrame(loop);
         }
 
-        function finishSpin(finalRotation) {
+        function triggerTickVisual() {
+            pointer.classList.add('tick');
+            setTimeout(() => {
+                pointer.classList.remove('tick');
+            }, 50);
+        }
+
+        function finishSpin(winningIndex) {
             isSpinning = false;
             spinBtn.disabled = false;
             
-            // Reset transition so we can snap it back later without animating
-            canvas.style.transition = 'none';
-            
-            // Calculate Winner
-            // Pointer is at top (270 degrees or -90 degrees in canvas space relative to 0 at 3 o'clock)
-            // Because we rotate the canvas DIV via CSS, we need to calculate where the pointer lands relative to the 0-index.
-            
-            const numSegments = names.length;
-            const sliceAngle = 360 / numSegments;
-            
-            // Normalize rotation to 0-360
-            const actualRotation = finalRotation % 360;
-            
-            // The pointer is static at the top. 
-            // If we rotate the CANVAS negative (counter-clockwise), the segments move CCW.
-            // Effectively, the pointer is moving 'forward' through the array.
-            
-            // Calculation logic: 
-            // Index 0 starts at 0 degrees (3 o'clock).
-            // We need to find which segment is at 270 degrees (12 o'clock).
-            // Rotated angle is `actualRotation`.
-            // Effective angle of index 0 = 0 - actualRotation.
-            // We want to find index `i` where:
-            // 270 degrees lies within the range of slice `i`.
-            
-            // Simplified math for wheel logic:
-            // We rotated the canvas by `actualRotation` degrees.
-            // The position under the pointer (270deg) corresponds to:
-            // Angle on Canvas = (270 + actualRotation) % 360;
-            const angleUnderPointer = (270 + actualRotation) % 360;
-            
-            // Index = floor(angleUnderPointer / sliceAngle)
-            let winningIndex = Math.floor(angleUnderPointer / sliceAngle);
-            
-            // Safety clamp
-            if (winningIndex >= numSegments) winningIndex = 0;
+            if (winningIndex < 0 || winningIndex >= names.length) winningIndex = 0;
 
             const winnerName = names[winningIndex];
             
-            // 1. Visual Update
+            // Force one final draw (non-blurred)
+            currentVelocity = 0;
+            drawWheel(currentAngle);
+            
             logMessage(`The wheel has chosen... ${winnerName}!`, "win");
             showWinnerOverlay(winnerName);
 
-            // 2. Remove Logic (Requirement)
             setTimeout(() => {
+                if (animationFrameId) cancelAnimationFrame(animationFrameId);
+
                 names.splice(winningIndex, 1);
                 saveNames();
                 renderGrid();
                 
-                // Reset rotation visually to 0 equivalent so next spin doesn't unwind
-                // We keep the visual angle relative to 0 to maintain position, but since we removed the winner,
-                // the segments changed. It's smoother to snap to a close equivalent or just 0.
-                // For simplicity in this version, we snap back to 0 (visual snap) but it looks fine because we removed a segment.
-                // Actually, let's keep the rotation so the wheel doesn't snap wildly.
-                currentRotation = finalRotation; 
-                // However, we need to redraw the wheel with fewer segments.
-                // If we redraw, the canvas content changes. If we keep the rotation transform, the new segments will align with old angle.
-                // This creates a cool effect where the wheel "resets" itself.
-                drawWheel(); 
+                // Reset angle to 0 for clean look on next spin
+                currentAngle = 0;
+                drawWheel(currentAngle);
                 
-            }, 1500); // Slight delay so user sees the name on the wheel before it disappears
+            }, 1500);
         }
 
         function showWinnerOverlay(name) {
             winnerNameText.innerText = name;
             winnerOverlay.classList.add('active');
-            // Fake sound visual shake
+            // Screen shake
             document.body.style.transform = "translate(1px, 1px)";
             setTimeout(() => document.body.style.transform = "none", 100);
         }
